@@ -3,7 +3,8 @@ import math
 import os
 import platform
 from typing import Tuple, List, Union
-
+import sys
+sys.path.append("../scripts")
 import PIL
 from fastapi import FastAPI, Body
 from insightface.app import FaceAnalysis
@@ -11,8 +12,7 @@ from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjecti
 from diffusers import LCMScheduler
 from model_util import load_checkpoint_model_xl, load_diffusers_model_xl, create_noise_scheduler, load_models_xl
 from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPipeline
-import sys
-sys.path.append("../scripts")
+
 if platform.system() == "Darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
