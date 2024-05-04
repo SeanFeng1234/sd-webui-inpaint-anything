@@ -5,6 +5,7 @@ import platform
 from typing import Tuple, List, Union
 import sys
 sys.path.append("../scripts")
+
 import PIL
 from fastapi import FastAPI, Body
 from insightface.app import FaceAnalysis
