@@ -11,7 +11,8 @@ from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjecti
 from diffusers import LCMScheduler
 from model_util import load_checkpoint_model_xl, load_diffusers_model_xl, create_noise_scheduler, load_models_xl
 from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPipeline
-
+import sys
+sys.path.append("../scripts")
 if platform.system() == "Darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
