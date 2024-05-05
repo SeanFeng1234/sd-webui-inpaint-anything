@@ -4,7 +4,15 @@ import os
 import platform
 from typing import Tuple, List, Union
 import sys
-sys.path.append("../scripts")
+
+# 获取当前脚本所在的目录
+current_path = os.path.dirname(os.path.realpath(__file__))
+print("当前路径:", current_path)
+
+# 目录添加到 Python 路径中
+sys.path.append(current_path)
+
+# sys.path.append("../scripts")
 
 import PIL
 from fastapi import FastAPI, Body
@@ -62,7 +70,6 @@ from ia_webui_controlnet import (backup_alwayson_scripts, clear_controlnet_cache
                                  get_sd_img2img_processing, restore_alwayson_scripts)
 import random
 import string
-import redis
 from pathlib import Path
 # 字符集：包含所有大写和小写字母以及数字
 characters = string.ascii_letters + string.digits
@@ -78,38 +85,82 @@ expire_time = 24 * 60 * 60  # 24小时的秒数
 from huggingface_hub import hf_hub_download
 
 SDXL_TEXT_ENCODER_TYPE = Union[CLIPTextModel, CLIPTextModelWithProjection]
-app_face = FaceAnalysis(name='antelopev2', root='./', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-app_face.prepare(ctx_id=0, det_size=(640, 640))
+# app_face = FaceAnalysis(name='antelopev2', root='./', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+# app_face.prepare(ctx_id=0, det_size=(640, 640))
 
-# Path to InstantID models
-face_adapter = f'./checkpoints/ip-adapter.bin'
-controlnet_path = f'./checkpoints/ControlNetModel'
-
-# device = torch.device(torch.cuda.current_device())
+## 定义全局变量，用于缓存已加载的模型
+pipe = None
+app_face = None
+# 定义模型路径和其他全局变量
+base_model = f'./models/checkpoints/YamerMIX_v8'
+face_adapter = f'./models/checkpoints/ip-adapter.bin'
+controlnet_path = f'./models/checkpoints/ControlNetModel'
+lcm_lora_path = "./models/checkpoints/pytorch_lora_weights.safetensors"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float16
 
-# base_model = 'wangqixun/YamerMIX_v8'
-base_model= f'./checkpoints/YamerMIX_v8'
-# Load pipeline
-controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=dtype)
 
-pipe = StableDiffusionXLInstantIDPipeline.from_pretrained(
-            base_model,
-            controlnet=controlnet,
-            torch_dtype=dtype,
-            safety_checker=None,
-            feature_extractor=None,
-        ).to(device)
+# 定义缓存模型的路径
+cached_model_path = Path("cached_model.pth")
 
-# pipe.scheduler = diffusers.EulerDiscreteScheduler.from_config(pipe.scheduler.config)
-pipe.load_ip_adapter_instantid(face_adapter)
+# 延迟加载模型，并缓存加载的结果
+def load_model():
+    global pipe, app_face
+    if app_face is None:
+        # 加载 app_face 模型的代码
+        app_face = FaceAnalysis(name='antelopev2', root='./',
+                                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        app_face.prepare(ctx_id=0, det_size=(640, 640))
+    if pipe is None:
+        if cached_model_path.exists():
+            # 从缓存中加载模型
+            pipe = torch.load(cached_model_path)
+        else:
+            # 加载模型的代码
+            controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=dtype)
+            pipe = StableDiffusionXLInstantIDPipeline.from_pretrained(
+                base_model,
+                controlnet=controlnet,
+                torch_dtype=dtype,
+                safety_checker=None,
+                feature_extractor=None,
+            ).to(device)
+            pipe.load_ip_adapter_instantid(face_adapter)
+            pipe.load_lora_weights(lcm_lora_path)
+            pipe.fuse_lora()
+            pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+            # 将加载的模型缓存起来
+            torch.save(pipe, cached_model_path)
 
-lcm_lora_path = "./checkpoints/pytorch_lora_weights.safetensors"
-
-pipe.load_lora_weights(lcm_lora_path)
-pipe.fuse_lora()
-pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+# # Path to InstantID models
+# face_adapter = f'./models/checkpoints/ip-adapter.bin'
+# controlnet_path = f'./models/checkpoints/ControlNetModel'
+#
+# # device = torch.device(torch.cuda.current_device())
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# dtype = torch.float16
+#
+# # base_model = 'wangqixun/YamerMIX_v8'
+# base_model= f'./models/checkpoints/YamerMIX_v8'
+# # Load pipeline
+# controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=dtype)
+#
+# pipe = StableDiffusionXLInstantIDPipeline.from_pretrained(
+#             base_model,
+#             controlnet=controlnet,
+#             torch_dtype=dtype,
+#             safety_checker=None,
+#             feature_extractor=None,
+#         ).to(device)
+#
+# # pipe.scheduler = diffusers.EulerDiscreteScheduler.from_config(pipe.scheduler.config)
+# pipe.load_ip_adapter_instantid(face_adapter)
+#
+# lcm_lora_path = "./models/checkpoints/pytorch_lora_weights.safetensors"
+#
+# pipe.load_lora_weights(lcm_lora_path)
+# pipe.fuse_lora()
+# pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
 # pipe.enable_model_cpu_offload()
 def apply_style(style_name: str, positive: str, negative: str = "") -> tuple[str, str]:
     p, n = styles.get(style_name, styles[DEFAULT_STYLE_NAME])
@@ -1826,6 +1877,9 @@ def mount_inpaint_anything(_: gr.Blocks, app: FastAPI):
     def generate_image( face_image: str = Body("", title='face_image'), pose_image: str = Body(None, title='pose_image'),  username: str = Body("", title='username'),taskid: str = Body("", title='taskid'),prompt: str = Body("", title='prompt'),negative_prompt: str = Body("", title='negative_prompt'),  style_name: str = Body("", title='style_name'),  num_steps:int = Body(10, title='num_steps'),
                         identitynet_strength_ratio: float = Body(0.8, title='identitynet_strength_ratio'),  adapter_strength_ratio: float = Body(0.8, title='adapter_strength_ratio'),  guidance_scale:int = Body(5, title='guidance_scale')):
 
+        # 延迟加载pipe
+        load_model()
+
         face_image = api.decode_base64_to_image(face_image)
         if face_image is None:
             raise gr.Error(f"Cannot find any input face image! Please upload the face image")
@@ -1869,13 +1923,15 @@ def mount_inpaint_anything(_: gr.Blocks, app: FastAPI):
             width, height = face_kps.size
 
 
-        seed = random.randint(0, 2147483647)
+        seed = -1
 
 
         generator = torch.Generator(device=device).manual_seed(seed)
 
         print("Start inference...")
         print(f"[Debug] Prompt: {prompt}, \n[Debug] Neg Prompt: {negative_prompt}")
+
+
 
         pipe.set_ip_adapter_scale(adapter_strength_ratio)
 
@@ -1900,27 +1956,28 @@ def mount_inpaint_anything(_: gr.Blocks, app: FastAPI):
             generator=generator
         ).images[0]
 
-        sub_directory = username
-
-        # 使用 Path / 运算符拼接目录
-
+        # sub_directory = username
+        #
+        # # 使用 Path / 运算符拼接目录
+        #
         # 获取图像的宽和高
         width, height = image.size
 
         # 打印宽和高
         print(f"图像宽度：{width}px")
         print(f"图像高度：{height}px")
-
-        full_path = PIC_OUT_PATH / "created" /sub_directory
-        create_directory_if_not_exists(full_path)
-        full_path = full_path / (taskid+"_"+str(seed) + ".jpg")
-        print(full_path)
-
-        image.save(full_path)
-        # image.save("./ddd.png")
+        #
+        # full_path = PIC_OUT_PATH / "created" /sub_directory
+        # create_directory_if_not_exists(full_path)
+        # full_path = full_path / (taskid+"_"+str(seed) + ".jpg")
+        # print(full_path)
+        #
+        # image.save(full_path)
+        # # image.save("./ddd.png")
 
         # r.set(taskid, taskid,expire_time)
-        return full_path
+        return {"image": api.encode_pil_to_base64(image).decode("utf-8")}
+        # return full_path
 
     @app.post("/inpaint_anything/id_inpaint_douyin")
     def generate_image(pic_path: str = Body("", title='pic_path'),
